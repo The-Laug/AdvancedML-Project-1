@@ -72,10 +72,18 @@ class DDPM(nn.Module):
         x_t = torch.randn(shape).to(self.alpha.device)
 
         # Sample x_t given x_{t+1} until x_0 is sampled
+
         for t in range(self.T-1, -1, -1):
             ### Implement the remaining of Algorithm 2 here ###
-            pass
-
+            if t>0:
+                z = torch.randn_like(x_t)
+            else:
+                z = 0
+                
+            #TypeError: expected Tensor as element 0 in argument 0, but got int
+            eps_theta = self.network(x_t, torch.full((x_t.shape[0], 1), t).to(self.alpha.device))
+            # eps_theta = self.network(z, torch.full((x_t.shape[0], 1), t).to(self.alpha.device))
+            x_t = 1/torch.sqrt(self.alpha[t]) * (x_t - (1-self.alpha[t])/torch.sqrt(1-self.alpha_cumprod[t]) * eps_theta + z * torch.sqrt(self.beta[t]))
         return x_t
 
     def loss(self, x):
