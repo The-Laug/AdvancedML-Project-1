@@ -46,8 +46,15 @@ class DDPM(nn.Module):
         """
 
         ### Implement Algorithm 1 here ###
-        neg_elbo = 0
-
+        term1 = torch.sqrt(self.alpha_cumprod)
+        eps = torch.normal(0, 1, size=x.size()).to(x.device)
+        t = torch.randint(0, self.T, size=(x.shape[0],)).to(x.device)
+        term1 = torch.sqrt(self.alpha_cumprod[t.long()])
+        term2 = torch.sqrt(1-self.alpha_cumprod[t.long()])
+        z = term1[:, None] * x + term2[:, None] * eps
+        t.unsqueeze_(-1)
+        eps_theta = self.network(z, t)
+        neg_elbo = torch.norm(eps-eps_theta)
         return neg_elbo
 
     def sample(self, shape):
