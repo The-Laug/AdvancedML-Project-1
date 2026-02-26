@@ -249,7 +249,7 @@ if __name__ == "__main__":
         # Generate samples
         model.eval()
         with torch.no_grad():
-            samples = (model.sample((10000,D))).cpu() 
+            samples = (model.sample((64,D))).cpu() 
 
         # Transform the samples back to the original space
         samples = samples /2 + 0.5
