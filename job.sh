@@ -1,51 +1,61 @@
-#!/bin/bash
-#SBATCH --job-name=vae_10x3
-#SBATCH --output=logs/vae_10x3_%j.out
-#SBATCH --error=logs/vae_10x3_%j.err
-#SBATCH --time=12:00:00
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#!/bin/sh
+### ── LSF options ──────────────────────────────────────────
+#BSUB -J vae_10x3
+#BSUB -q gpuv100
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -n 4
+#BSUB -R "rusage[mem=16GB]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 12:00
+#BSUB -oo vae_10x3_%J.out
+#BSUB -eo vae_10x3_%J.err
+#BSUB -B
+#BSUB -N
+### ── end of LSF options ──────────────────────────────────
 
-# -----------------------------------------------------------------------
-# Train 10 VAE models for each of the 3 priors and save test ELBO results
-# -----------------------------------------------------------------------
+# Move log files to logs dir after LSF creates them in cwd
+trap 'mv -f vae_10x3_*.out vae_10x3_*.err "$REPO"/logs/ 2>/dev/null' EXIT
 
-# Create log directory if it doesn't exist
-mkdir -p logs
+echo "========================================="
+echo "Job: vae_10x3"
+echo "Host: $(hostname)"
+echo "GPU:  $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'none')"
+echo "Date: $(date)"
+echo "========================================="
 
-echo "Job ID:      $SLURM_JOB_ID"
-echo "Node:        $SLURMD_NODENAME"
-echo "Start time:  $(date)"
-echo "Working dir: $PWD"
-
-# Load modules (adjust to your cluster's module system)
-# module load python/3.10
-# module load cuda/12.1
+# ── Environment setup ─────────────────────────────────────
+export REPO=$(pwd)
+export PATH="$HOME/.local/bin:$PATH"
+cd "$REPO"
 
 # Activate virtual environment if present
-if [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
+if [ -f "$REPO/.venv/bin/activate" ]; then
+    source "$REPO/.venv/bin/activate"
     echo "Activated .venv"
-elif [ -f "venv/bin/activate" ]; then
-    source venv/bin/activate
+elif [ -f "$REPO/venv/bin/activate" ]; then
+    source "$REPO/venv/bin/activate"
     echo "Activated venv"
 fi
 
-echo "Python: $(which python)"
-echo "Python version: $(python --version)"
+# Verify GPU is accessible
+python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"cpu\"}')"
 
-# Run the training and evaluation script
-python train_eval_10x3.py \
+# ── Create output directory ───────────────────────────────
+OUTPUT_DIR=$REPO/hpc_runs/vae_10x3
+mkdir -p "$OUTPUT_DIR"
+mkdir -p "$REPO/logs"
+
+# ── Run training and evaluation script ────────────────────
+python3 "$REPO/train_eval_10x3.py" \
     --device cuda \
     --latent-dim 10 \
     --epochs 10 \
     --batch-size 32 \
     --runs 10 \
-    --output elbo_results.json \
-    --data-root data/
+    --output "$OUTPUT_DIR/elbo_results.json" \
+    --data-root "$REPO/data/"
 
 echo ""
-echo "Finished at: $(date)"
-echo "Exit code: $?"
+echo "========================================="
+echo "Job vae_10x3 finished at $(date)"
+echo "========================================="
