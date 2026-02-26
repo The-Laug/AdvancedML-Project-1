@@ -46,15 +46,17 @@ class DDPM(nn.Module):
         """
 
         ### Implement Algorithm 1 here ###
-        term1 = torch.sqrt(self.alpha_cumprod)
-        eps = torch.normal(0, 1, size=x.size()).to(x.device)
-        t = torch.randint(0, self.T, size=(x.shape[0],)).to(x.device)
-        term1 = torch.sqrt(self.alpha_cumprod[t.long()])
-        term2 = torch.sqrt(1-self.alpha_cumprod[t.long()])
-        z = term1[:, None] * x + term2[:, None] * eps
-        t.unsqueeze_(-1)
-        eps_theta = self.network(z, t)
-        neg_elbo = torch.norm(eps-eps_theta)
+
+
+        eps = torch.randn_like(x).to(x.device)
+        t = torch.randint(0, self.T, size=(x.shape[0],), device=x.device)
+        alpha_cumprod_t = self.alpha_cumprod[t.long()]
+        t_norm = (t.float() / self.T).unsqueeze(1)
+        term1 = torch.sqrt(alpha_cumprod_t).unsqueeze(1)
+        term2 = torch.sqrt(1 - alpha_cumprod_t).unsqueeze(1)
+        z = term1 * x + term2 * eps
+        eps_theta = self.network(z, t_norm)
+        neg_elbo = torch.norm(eps - eps_theta, dim=1)
         return neg_elbo
 
     def sample(self, shape):
@@ -73,8 +75,11 @@ class DDPM(nn.Module):
 
         # Sample x_t given x_{t+1} until x_0 is sampled
         for t in range(self.T-1, -1, -1):
-            ### Implement the remaining of Algorithm 2 here ###
-            pass
+            z = torch.randn_like(x_t).to(x_t.device) if t > 0 else torch.zeros_like(x_t).to(x_t.device) 
+            term2 = (1 - self.alpha[t] ) / torch.sqrt(1 - self.alpha_cumprod[t])
+            t_filled = torch.full((shape[0], 1), t/self.T, device=x_t.device)
+
+            x_t = (1 / torch.sqrt(self.alpha[t])) * (x_t - term2 * self.network(x_t, t_filled)) + torch.sqrt(self.beta[t]) * z
 
         return x_t
 
@@ -164,6 +169,7 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import save_image
     import ToyData
+    
 
     # Parse arguments
     import argparse
@@ -173,8 +179,8 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--batch-size', type=int, default=10000, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='batch size for training (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=50, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
 
     args = parser.parse_args()
@@ -183,18 +189,38 @@ if __name__ == "__main__":
         print(key, '=', value)
 
     # Generate the data
-    n_data = 10000000
-    toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-    transform = lambda x: (x-0.5)*2.0
-    train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
+    if args.data == 'mnist':
+        transform = transforms.Compose([transforms.ToTensor(), 
+                    transforms.Lambda(lambda x: x + torch.rand ( x.shape ) /255),
+                    transforms.Lambda(lambda x: (x-0.5)*2.0),
+                    transforms.Lambda(lambda x: x.flatten())])
+        train_loader = torch.utils.data.DataLoader(datasets.MNIST('./data', train=True, download=True, transform=transform), batch_size=args.batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(datasets.MNIST('./data', train=False, download=True, transform=transform), batch_size=args.batch_size, shuffle=True)
+        
+    else:
+        n_data = 10000000
+        toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
+        transform = lambda x: (x-0.5)*2.0
+        train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
 
     # Get the dimension of the dataset
-    D = next(iter(train_loader)).shape[1]
+    if args.data == 'mnist':
+        D = next(iter(train_loader))[0].shape[1]
+    else:
+        D = next(iter(train_loader)).shape[1]
 
     # Define the network
     num_hidden = 64
-    network = FcNetwork(D, num_hidden)
+    if args.data == 'mnist':
+        import os, sys
+        print('get unet')
+        sys.path.insert(0, os.path.dirname(__file__))
+        from unet import Unet
+        network = Unet()
+        print('got unet')
+    else:
+        network = FcNetwork(D, num_hidden)
 
     # Set the number of steps in the diffusion process
     T = 1000
@@ -216,10 +242,10 @@ if __name__ == "__main__":
     elif args.mode == 'sample':
         import matplotlib.pyplot as plt
         import numpy as np
-
+        import math
+        import random
         # Load the model
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-
         # Generate samples
         model.eval()
         with torch.no_grad():
@@ -229,15 +255,29 @@ if __name__ == "__main__":
         samples = samples /2 + 0.5
 
         # Plot the density of the toy data and the model samples
-        coordinates = [[[x,y] for x in np.linspace(*toy.xlim, 1000)] for y in np.linspace(*toy.ylim, 1000)]
-        prob = torch.exp(toy().log_prob(torch.tensor(coordinates)))
+        if args.data != 'mnist':
 
-        fig, ax = plt.subplots(1, 1, figsize=(7, 5))
-        im = ax.imshow(prob, extent=[toy.xlim[0], toy.xlim[1], toy.ylim[0], toy.ylim[1]], origin='lower', cmap='YlOrRd')
-        ax.scatter(samples[:, 0], samples[:, 1], s=1, c='black', alpha=0.5)
-        ax.set_xlim(toy.xlim)
-        ax.set_ylim(toy.ylim)
-        ax.set_aspect('equal')
-        fig.colorbar(im)
-        plt.savefig(args.samples)
-        plt.close()
+            coordinates = [[[x,y] for x in np.linspace(*toy.xlim, 1000)] for y in np.linspace(*toy.ylim, 1000)]
+            prob = torch.exp(toy().log_prob(torch.tensor(coordinates)))
+
+            fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+            im = ax.imshow(prob, extent=[toy.xlim[0], toy.xlim[1], toy.ylim[0], toy.ylim[1]], origin='lower', cmap='YlOrRd')
+            ax.scatter(samples[:, 0], samples[:, 1], s=1, c='black', alpha=0.5)
+            ax.set_xlim(toy.xlim)
+            ax.set_ylim(toy.ylim)
+            ax.set_aspect('equal')
+            fig.colorbar(im)
+            plt.savefig(args.samples)
+            plt.close()
+
+        else:
+            n_samples = samples.shape[0]
+            samples = samples.reshape(n_samples, 28, 28)
+            samples = samples.clamp(0.0, 1.0)
+
+            n_plot = min(64, n_samples)
+            idx = torch.randperm(n_samples)[:n_plot]
+            plot_samples = samples[idx]
+            nrow = int(math.sqrt(n_plot))
+            save_image(plot_samples.unsqueeze(1), args.samples, nrow=nrow)
+
